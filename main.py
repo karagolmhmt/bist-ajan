@@ -247,55 +247,53 @@ def doviz_cek():
 
 # ─── GEMİNİ ──────────────────────────────────────────────────────────────────
 
-def gemini_istek(prompt, max_tokens=1500):
+def gemini_istek(prompt, max_tokens=1200):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    
-    print(f"  API Key yuklu mu: {bool(api_key)}")
-    print(f"  API Key uzunlugu: {len(api_key)}")
-    print(f"  API Key basi: {api_key[:8] if api_key else 'YOK'}")
-    
+
+    print(f"  API Key var mi: {bool(api_key)}")
+    print(f"  API Key uzunluk: {len(api_key)}")
+    print(f"  API Key bas: {api_key[:10] if api_key else 'YOK'}")
+
     if not api_key:
-        return "Gemini API anahtari eksik."
+        return "HATA: GEMINI_API_KEY secret eksik!"
 
-    # v1 ve v1beta, birden fazla model dene
-    denemeler = [
-        ("v1", "gemini-1.5-flash"),
-        ("v1", "gemini-1.5-flash-001"),
-        ("v1beta", "gemini-1.5-flash"),
-        ("v1beta", "gemini-1.5-flash-latest"),
-        ("v1beta", "gemini-2.0-flash"),
-        ("v1", "gemini-1.0-pro"),
-    ]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7}
+    }
 
-    for versiyon, model in denemeler:
-        url = f"https://generativelanguage.googleapis.com/{versiyon}/models/{model}:generateContent?key={api_key}"
-        body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": max_tokens}
-        }
-        try:
-            r = requests.post(url, json=body, timeout=30)
-            print(f"  {versiyon}/{model} -> HTTP {r.status_code}")
-            d = r.json()
-            if "candidates" in d and d["candidates"]:
-                print(f"  Basarili: {versiyon}/{model}")
-                return d["candidates"][0]["content"]["parts"][0]["text"]
-            if "error" in d:
-                print(f"  Hata: {d['error'].get('message', '')[:100]}")
-        except Exception as e:
-            print(f"  {versiyon}/{model} exception: {e}")
-            continue
+    try:
+        time.sleep(2)
+        r = requests.post(url, json=body, timeout=40)
+        print(f"  HTTP Status: {r.status_code}")
+        d = r.json()
+        print(f"  RAW keys: {list(d.keys())}")
 
-    return "Gemini yanit vermedi."
+        if "error" in d:
+            print(f"  API Hatasi: {d['error'].get('message', '')}")
+            return f"Gemini API hatasi: {d['error'].get('message', '')}"
+
+        if "candidates" in d and len(d["candidates"]) > 0:
+            c = d["candidates"][0]
+            if "content" in c and "parts" in c["content"]:
+                return c["content"]["parts"][0]["text"]
+            print(f"  Candidate icerigi bos: {c}")
+            return "Gemini bos yanit dondu."
+
+        print(f"  Tum yanit: {str(d)[:300]}")
+        return "Gemini beklenmedik yanit yapisi."
+
+    except Exception as e:
+        print(f"  Exception: {e}")
+        return f"Gemini baglanti hatasi: {e}"
 
 def ai_tavsiye(analizler, doviz):
+    # Max 10 hisse gonder (rate limit icin)
+    kisaltilmis = analizler[:10]
     veri = "\n".join([
-        f"{a['ticker']}: {a['fiyat']} TL ({'+' if a['degisim']>0 else ''}{a['degisim']}%) | "
-        f"RSI:{a['rsi']} | MACD hist:{a['macd_hist']} | Hacim:x{a['hacim_orani']} | "
-        f"MA20:{a['ma20']} MA50:{a['ma50']} | BB:%{a['bb_poz']} | "
-        f"Destek:{a['destek']} Direnc:{a['direnc']} | "
-        f"Sinyaller:[{', '.join(a['sinyaller']) or 'yok'}]"
-        for a in analizler
+        f"{a['ticker']}: {a['fiyat']}TL ({'+' if a['degisim']>0 else ''}{a['degisim']}%) RSI:{a['rsi']} MACD:{a['macd_hist']} Hacim:x{a['hacim_orani']} BB:%{a['bb_poz']} [{', '.join(a['sinyaller'][:2]) or 'yok'}]"
+        for a in kisaltilmis
     ])
 
     kur_satir = " | ".join([f"{k}: {v}" for k, v in doviz.items()])
