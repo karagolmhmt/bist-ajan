@@ -248,35 +248,45 @@ def doviz_cek():
 # ─── GEMİNİ ──────────────────────────────────────────────────────────────────
 
 def gemini_istek(prompt, max_tokens=1500):
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    
+    print(f"  API Key yuklu mu: {bool(api_key)}")
+    print(f"  API Key uzunlugu: {len(api_key)}")
+    print(f"  API Key basi: {api_key[:8] if api_key else 'YOK'}")
+    
     if not api_key:
-        return "Gemini API anahtarı eksik."
+        return "Gemini API anahtari eksik."
 
-    # Sırayla denenecek modeller
-    modeller = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-pro",
+    # v1 ve v1beta, birden fazla model dene
+    denemeler = [
+        ("v1", "gemini-1.5-flash"),
+        ("v1", "gemini-1.5-flash-001"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1", "gemini-1.0-pro"),
     ]
 
-    for model in modeller:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    for versiyon, model in denemeler:
+        url = f"https://generativelanguage.googleapis.com/{versiyon}/models/{model}:generateContent?key={api_key}"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": max_tokens}
         }
         try:
             r = requests.post(url, json=body, timeout=30)
+            print(f"  {versiyon}/{model} -> HTTP {r.status_code}")
             d = r.json()
             if "candidates" in d and d["candidates"]:
+                print(f"  Basarili: {versiyon}/{model}")
                 return d["candidates"][0]["content"]["parts"][0]["text"]
-            # Model çalışmadıysa bir sonrakini dene
-            print(f"  Model {model} yanıt vermedi, sonraki deneniyor...")
+            if "error" in d:
+                print(f"  Hata: {d['error'].get('message', '')[:100]}")
         except Exception as e:
-            print(f"  Model {model} hatası: {e}")
+            print(f"  {versiyon}/{model} exception: {e}")
             continue
 
-    return "Gemini yanıt vermedi, lütfen API anahtarını kontrol et."
+    return "Gemini yanit vermedi."
 
 def ai_tavsiye(analizler, doviz):
     veri = "\n".join([
