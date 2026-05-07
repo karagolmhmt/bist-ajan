@@ -455,7 +455,7 @@ def main():
     print("\n Gemini AI analiz yapiyor...")
     ai_yorum = ai_tavsiye(analizler, doviz)
     print("  Hisse yorumu hazir")
-
+    time.sleep(60)
     trend_yorum = ai_trend_yorum(trendler)
     print("  Trend yorumu hazir")
 
