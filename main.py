@@ -22,6 +22,8 @@ TREND_EVREN = [
     "YKBNK", "ISCTR", "ENKAI", "CEMTS", "PARSN",
 ]
 
+# ─── TEKNİK ANALİZ ────────────────────────────────────────────────────────────
+
 def rsi_hesapla(fiyatlar, periyot=14):
     delta = fiyatlar.diff()
     kazanc = delta.where(delta > 0, 0).rolling(periyot).mean()
@@ -99,8 +101,7 @@ def sinyal_uret(rsi, macd_hist, degisim, hacim_orani, bb_poz, ma20, ma50, fiyat)
 
 def hisse_analiz(ticker):
     try:
-        sembol = ticker + ".IS"
-        df = yf.Ticker(sembol).history(period="6mo")
+        df = yf.Ticker(ticker + ".IS").history(period="6mo")
         if df is None or df.empty or len(df) < 30:
             return None
         fiyatlar = df["Close"]
@@ -117,7 +118,9 @@ def hisse_analiz(ticker):
         hacim_orani = round(son_hacim / ort_hacim, 2) if ort_hacim > 0 else 1.0
         destek = round(df.tail(20)["Low"].min(), 2)
         direnc = round(df.tail(20)["High"].max(), 2)
-        karar, sinyaller, skor = sinyal_uret(rsi, macd_h, degisim, hacim_orani, bb_p, ma20, ma50, son)
+        karar, sinyaller, skor = sinyal_uret(
+            rsi, macd_h, degisim, hacim_orani, bb_p, ma20, ma50, son
+        )
         return {
             "ticker": ticker, "fiyat": son, "degisim": degisim,
             "ma20": ma20, "ma50": ma50, "rsi": rsi, "macd_hist": macd_h,
@@ -130,7 +133,7 @@ def hisse_analiz(ticker):
         return None
 
 def trend_tara(min_hacim=1.5, top_n=8):
-    print("Trend hisseler taranıyor...")
+    print("Trend taranıyor...")
     sonuclar = []
     for ticker in TREND_EVREN:
         try:
@@ -180,58 +183,68 @@ def doviz_cek():
         pass
     return kurlar
 
-def gemini_istek(prompt, max_tokens=1000):
+# ─── TEK GEMİNİ ÇAĞRISI ───────────────────────────────────────────────────────
+
+def gemini_piyasa_ozeti(analizler, trendler, doviz):
+    """
+    Tüm verilen tek bir kısa prompt ile özetler.
+    Sadece 1 istek = kota patlamaz.
+    """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    print(f"  API Key var mi: {bool(api_key)}, uzunluk: {len(api_key)}")
+    print(f"  API Key: {bool(api_key)}, {len(api_key)} karakter")
     if not api_key:
-        return "HATA: GEMINI_API_KEY eksik!"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7}
-    }
+        return "AI yorum yok (API key eksik)."
+
+    al = [a["ticker"] for a in analizler if a["karar"] == "AL"]
+    sat = [a["ticker"] for a in analizler if a["karar"] == "SAT"]
+    tut = [a["ticker"] for a in analizler if a["karar"] == "TUT"]
+
+    ort_rsi = round(sum(a["rsi"] for a in analizler) / len(analizler), 1) if analizler else 0
+    pozitif = sum(1 for a in analizler if a["degisim"] > 0)
+    negatif = sum(1 for a in analizler if a["degisim"] < 0)
+
+    trend_ozet = ", ".join([
+        f"{h['ticker']}({'+' if h['gun_deg']>0 else ''}{h['gun_deg']:.1f}%,x{h['hacim_r']:.1f})"
+        for h in trendler[:5]
+    ])
+
+    prompt = f"""Turk borsa analistisin. Asagidaki verilere bakarak kisa bir piyasa ozeti yaz.
+
+Kurlar: USD/TRY:{doviz.get('USD/TRY','?')} | EUR/TRY:{doviz.get('EUR/TRY','?')} | Altin:{doviz.get('ALTIN_GRAM_TL','?')}TL/gr
+Piyasa durumu: {pozitif} hisse yukseliyor, {negatif} hisse dusuyor, Ortalama RSI:{ort_rsi}
+AL sinyali: {', '.join(al) if al else 'yok'}
+SAT sinyali: {', '.join(sat) if sat else 'yok'}
+Trend hisseler: {trend_ozet if trend_ozet else 'yok'}
+
+Lutfen su formatta yaz:
+PIYASA: (1 cumle genel durum)
+DIKKAT: (en cok one cikan 1-2 hisse ve neden)
+TREND: (hacim artisi olan hisseler hakkinda 1 cumle)
+YORUM: (bugunun piyasasi icin 1-2 cumle haber stili ozet)
+
+Kisa ve oz ol. Yatirim tavsiyesi degildir."""
+
     try:
-        time.sleep(3)
-        r = requests.post(url, json=body, timeout=40)
-        print(f"  HTTP: {r.status_code}")
+        time.sleep(2)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        r = requests.post(url, json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 500, "temperature": 0.7}
+        }, timeout=30)
+        print(f"  Gemini HTTP: {r.status_code}")
         d = r.json()
         if "error" in d:
             msg = d["error"].get("message", "")
             print(f"  Gemini hata: {msg}")
-            return f"Gemini hatasi: {msg}"
+            return f"AI yorum alinamadi: {msg[:100]}"
         if "candidates" in d and d["candidates"]:
             return d["candidates"][0]["content"]["parts"][0]["text"]
-        return "Gemini bos yanit."
+        return "AI yorum alinamadi."
     except Exception as e:
-        return f"Baglanti hatasi: {e}"
+        print(f"  Gemini exception: {e}")
+        return f"AI baglanti hatasi: {e}"
 
-def ai_tavsiye(analizler, doviz):
-    veri = "\n".join([
-        f"{a['ticker']}: {a['fiyat']}TL ({'+' if a['degisim']>0 else ''}{a['degisim']}%) RSI:{a['rsi']} MACD:{a['macd_hist']} Hacim:x{a['hacim_orani']} [{', '.join(a['sinyaller'][:2]) or 'yok'}]"
-        for a in analizler[:8]
-    ])
-    kur = " | ".join([f"{k}: {v}" for k, v in doviz.items()])
-    prompt = f"""Turk borsa analistisin. Verileri yorumla.
-
-Kurlar: {kur}
-
-Hisseler:
-{veri}
-
-Her hisse icin: TICKER - AL/SAT/TUT, 1 cumle gerekcе, hedef ve stop fiyat.
-Son 2 cumle genel BIST yorumu.
-Yatirim tavsiyesi degildir."""
-    return gemini_istek(prompt, 1200)
-
-def ai_trend_yorum(trendler):
-    if not trendler:
-        return "Trend hisse bulunamadi."
-    liste = "\n".join([
-        f"{h['ticker']}: {'+' if h['gun_deg']>0 else ''}{h['gun_deg']:.1f}% gunluk, hacim x{h['hacim_r']:.1f}"
-        for h in trendler
-    ])
-    prompt = f"BIST trend hisseler:\n{liste}\n\n3 cumle yorum yap."
-    return gemini_istek(prompt, 400)
+# ─── TELEGRAM ─────────────────────────────────────────────────────────────────
 
 def telegram_gonder(mesaj):
     token = os.environ.get("TELEGRAM_TOKEN", "")
@@ -242,15 +255,21 @@ def telegram_gonder(mesaj):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for parca in [mesaj[i:i+4000] for i in range(0, len(mesaj), 4000)]:
         try:
-            r = requests.post(url, json={"chat_id": chat_id, "text": parca, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+            r = requests.post(url, json={
+                "chat_id": chat_id, "text": parca,
+                "parse_mode": "HTML", "disable_web_page_preview": True
+            }, timeout=15)
             print(f"  Telegram: {'ok' if r.status_code==200 else r.text}")
         except Exception as e:
             print(f"  Telegram hata: {e}")
         time.sleep(0.5)
 
-def rapor_olustur(analizler, doviz, ai_yorum, trendler, trend_yorum):
+# ─── RAPOR ────────────────────────────────────────────────────────────────────
+
+def rapor_olustur(analizler, doviz, ai_ozet, trendler):
     tarih = datetime.now().strftime("%d.%m.%Y %A")
     saat = datetime.now().strftime("%H:%M")
+
     kur = ""
     if doviz.get("USD/TRY"):
         kur += f"💵 USD: {doviz['USD/TRY']} TL"
@@ -258,20 +277,32 @@ def rapor_olustur(analizler, doviz, ai_yorum, trendler, trend_yorum):
         kur += f"  |  💶 EUR: {doviz['EUR/TRY']} TL"
     if doviz.get("ALTIN_GRAM_TL"):
         kur += f"  |  🥇 Altin: {int(doviz['ALTIN_GRAM_TL'])} TL/gr"
+
+    # Sinyal özeti
     al = [a for a in analizler if a["karar"] == "AL"]
     sat = [a for a in analizler if a["karar"] == "SAT"]
     tut = [a for a in analizler if a["karar"] == "TUT"]
     ozet = ""
     if al:
-        ozet += "🟢 AL: " + " · ".join([a["ticker"] for a in al]) + "\n"
+        ozet += "🟢 <b>AL:</b> " + " · ".join([a["ticker"] for a in al]) + "\n"
     if sat:
-        ozet += "🔴 SAT: " + " · ".join([a["ticker"] for a in sat]) + "\n"
+        ozet += "🔴 <b>SAT:</b> " + " · ".join([a["ticker"] for a in sat]) + "\n"
     if tut:
-        ozet += "🟡 TUT: " + " · ".join([a["ticker"] for a in tut]) + "\n"
+        ozet += "🟡 <b>TUT:</b> " + " · ".join([a["ticker"] for a in tut]) + "\n"
+
+    # Detaylı hisse tablosu
+    tablo = ""
+    for a in analizler:
+        yon = "▲" if a["degisim"] >= 0 else "▼"
+        sinyal_str = " | ".join(a["sinyaller"][:2]) if a["sinyaller"] else "-"
+        tablo += f"<code>{a['ticker']:<6}</code> {a['fiyat']:>7.2f}TL {yon}{abs(a['degisim']):.1f}% RSI:{a['rsi']:>4} → {a['karar']} <i>{sinyal_str}</i>\n"
+
+    # Trend hisseler
     trend_satir = ""
     for h in trendler[:6]:
         yon = "📈" if h["gun_deg"] >= 0 else "📉"
-        trend_satir += f"{yon} {h['ticker']}: {h['fiyat']} TL | {'+' if h['gun_deg']>0 else ''}{h['gun_deg']:.1f}% | Hacim x{h['hacim_r']:.1f}\n"
+        trend_satir += f"{yon} <b>{h['ticker']}</b>: {h['fiyat']} TL | {'+' if h['gun_deg']>0 else ''}{h['gun_deg']:.1f}% | Hacim x{h['hacim_r']:.1f}\n"
+
     return f"""📊 <b>GÜNLÜK BORSA RAPORU</b>
 📅 {tarih} — ⏰ {saat}
 ━━━━━━━━━━━━━━━━━━━━━━━━
@@ -284,19 +315,24 @@ def rapor_olustur(analizler, doviz, ai_yorum, trendler, trend_yorum):
 {ozet.strip()}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>HİSSE DETAYLARI</b>
+<code>Hisse   Fiyat    Değ   RSI  Karar</code>
+{tablo.strip()}
+
+━━━━━━━━━━━━━━━━━━━━━━━━
 🔥 <b>TREND HİSSELER</b>
 {trend_satir.strip()}
 
-{trend_yorum}
-
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 <b>AI ANALİZ VE TAVSİYELER</b>
-{ai_yorum}
+🤖 <b>AI PİYASA ÖZETİ</b>
+{ai_ozet}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ <i>Bu rapor yatırım tavsiyesi değildir.</i>
 🤖 Gemini 2.0 Flash + Yahoo Finance
 ⏱️ {saat} | BORSA.AI"""
+
+# ─── ANA FONKSİYON ────────────────────────────────────────────────────────────
 
 def main():
     print(f"\nBIST AI Ajan -- {datetime.now().strftime('%d.%m.%Y %H:%M')}")
@@ -304,7 +340,7 @@ def main():
 
     print("\nDoviz aliniyor...")
     doviz = doviz_cek()
-    print(f"  USD: {doviz.get('USD/TRY')} | EUR: {doviz.get('EUR/TRY')}")
+    print(f"  USD: {doviz.get('USD/TRY')} | EUR: {doviz.get('EUR/TRY')} | Altin: {doviz.get('ALTIN_GRAM_TL')}")
 
     print(f"\n{len(TAKIP_LISTESI)} hisse analiz ediliyor...")
     analizler = []
@@ -317,25 +353,17 @@ def main():
         else:
             print("veri yok")
         time.sleep(0.3)
-
-    print(f"\n  {len(analizler)}/{len(TAKIP_LISTESI)} hisse hazir")
+    print(f"  {len(analizler)}/{len(TAKIP_LISTESI)} hisse hazir")
 
     print("\nTrend taranıyor...")
     trendler = trend_tara()
 
-    print("\nGemini AI -- hisse analizi...")
-    ai_yorum = ai_tavsiye(analizler, doviz)
-    print("  ok")
-
-    print("\n60 saniye bekleniyor (rate limit)...")
-    time.sleep(60)
-
-    print("\nGemini AI -- trend yorumu...")
-    trend_yorum = ai_trend_yorum(trendler)
+    print("\nGemini AI ozeti (tek istek)...")
+    ai_ozet = gemini_piyasa_ozeti(analizler, trendler, doviz)
     print("  ok")
 
     print("\nRapor olusturuluyor...")
-    rapor = rapor_olustur(analizler, doviz, ai_yorum, trendler, trend_yorum)
+    rapor = rapor_olustur(analizler, doviz, ai_ozet, trendler)
 
     print("\nTelegram'a gonderiliyor...")
     telegram_gonder(rapor)
